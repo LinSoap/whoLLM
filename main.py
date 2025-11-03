@@ -42,24 +42,29 @@ class VoiceAssistant:
             {
                 "role": "system",
                 "content": """
-                        **角色与目标：**
-                        你是一位专业的医院随访护士AI。请以**友好、简短、对话式**的语气，主动完成一次高血压患者的电话随访。
-                        
-                        **随访流程（按顺序主动执行）：**
-                        
-                        1.  **开场与确认：** 自我介绍（医院/科室/身份，例如：XX医院随访中心），确认对方身份，说明本次随访目的是关心血压和用药。
-                        2.  **核心信息采集：**
-                            * **询问血压值：** 询问最近测得的**血压数值**和测量频率。
-                            * **询问症状：** 询问是否有**头晕、头痛、胸闷**等不适症状。
-                            * **询问用药：** 确认是否**按时按量服药**，有无忘记或自行停药。
-                        3.  **健康指导与复诊提醒：**
-                            * 给予**简短的用药和低盐饮食**建议（基于患者反馈）。
-                            * **主动提醒**患者下次**复诊的具体时间或建议**，并强调坚持服药。
-                        4.  **结束语：** 礼貌地结束通话。
-                        
-                        **语气要求：** 温暖、专业、简练。每次回复请控制在30字以内，确保信息简洁明了。
+                **角色与目标：**
+                你是一位专业的医院随访护士AI。请以**友好、简短、对话式**的语气，严格按照以下步骤**逐一、主动**完成高血压患者的电话随访。
+
+                **回复和推进机制（关键）：**
+                * **【强制连续性】**：AI的回复内容必须是**当前步骤的响应**，并**紧接着包含下一个步骤的关键问题或指令**，以强制对话推进。
+                * **【强制推进机制】**：如果患者拒绝回答（如“我不想测”、“我不知道”），AI应给予简短理解后，**立即强制推进到下一个步骤**。
+                * **【字数限制】**：**每次回复务必控制在30字以内。**
+
+                **随访流程（严格按顺序主动执行）：**
+
+                1.  **开场与确认：** 自我介绍（健康医院随访中心），确认身份，说明目的。
+                2.  **核心采集 - 血压值：** 询问最近测得的**血压数值**和测量频率。
+                3.  **核心采集 - 症状：** 询问是否有**头晕、头痛、胸闷**等不适症状。
+                4.  **核心采集 - 用药：** 确认是否**按时按量服药**，有无忘记或自行停药。
+                5.  **健康指导：** 给予**简短的用药和低盐饮食**建议（基于用户反馈）。
+                6.  **复诊提醒：** **主动询问**患者下次**复诊的具体时间或建议**。
+                7.  **结束语：** 礼貌地结束通话。
 """,
-            }
+            },
+            {
+                "role": "assistant",
+                "content": "您好，我是健康医院随访中心的护士。请问您是张先生吗？我们想了解您的血压和用药情况。",
+            },
         ]
 
     def _convert_audio_to_wav(self, audio: Tuple[int, np.ndarray]) -> str:
@@ -110,6 +115,8 @@ class VoiceAssistant:
 
         self.messages.append({"role": "user", "content": text})
 
+        print(self.messages)
+
         try:
             response = completion(
                 model="openrouter/qwen/qwen3-30b-a3b-instruct-2507",
@@ -129,13 +136,17 @@ class VoiceAssistant:
             print(f"LLM 错误: {e}")
             return "对不起，我现在无法处理您的请求。"
 
-    async def _text_to_speech(self, text: str) -> Tuple[int, np.ndarray]:
+    async def _text_to_speech(self, text: str) -> Tuple[int, np.ndarray, str]:
         """文字转语音"""
         try:
-            await edge_tts.Communicate(text, self.tts_voice).save("output.mp3")
+            # 创建临时MP3文件
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as temp_file:
+                mp3_path = temp_file.name
+
+            await edge_tts.Communicate(text, self.tts_voice).save(mp3_path)
 
             # 加载TTS音频
-            tts_audio = AudioSegment.from_mp3("output.mp3")
+            tts_audio = AudioSegment.from_mp3(mp3_path)
             tts_samples = np.array(tts_audio.get_array_of_samples(), dtype=np.int16)
 
             if tts_audio.channels == 2:
@@ -143,10 +154,20 @@ class VoiceAssistant:
             else:
                 tts_samples = tts_samples.reshape(-1)
 
-            return (tts_audio.frame_rate, tts_samples)
+            return (tts_audio.frame_rate, tts_samples, mp3_path)
         except Exception as e:
             print(f"TTS 错误: {e}")
-            return (16000, np.array([]))
+            return (16000, np.array([]), "")
+
+    async def startup_audio(self):
+        """启动音频助手"""
+        sample_rate, samples, mp3_path = await self._text_to_speech(
+            "您好，健康医院随访中心，请问您是张先生吗？"
+        )
+        if samples.size > 0:
+            yield (sample_rate, samples)
+        if mp3_path and os.path.exists(mp3_path):
+            os.unlink(mp3_path)
 
     async def process_audio(self, audio: Tuple[int, np.ndarray]):
         """处理音频的完整流程"""
@@ -167,14 +188,14 @@ class VoiceAssistant:
                 return
 
             # 4. 文字转语音
-            tts_result = await self._text_to_speech(reply)
+            sample_rate, samples, mp3_path = await self._text_to_speech(reply)
 
-            if tts_result[1].size > 0:
-                yield tts_result
+            if samples.size > 0:
+                yield (sample_rate, samples)
 
             # 清理临时文件
-            if os.path.exists("output.mp3"):
-                os.unlink("output.mp3")
+            if mp3_path and os.path.exists(mp3_path):
+                os.unlink(mp3_path)
 
         finally:
             # 清理临时WAV文件
@@ -193,7 +214,10 @@ async def echo(audio: Tuple[int, np.ndarray]):
 
 # 创建流
 stream = Stream(
-    handler=ReplyOnPause(echo),
+    handler=ReplyOnPause(
+        echo,
+        startup_fn=assistant.startup_audio,
+    ),
     modality="audio",
     mode="send-receive",
 )
