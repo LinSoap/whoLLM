@@ -1,134 +1,194 @@
-from fastrtc import Stream, ReplyOnPause
-from litellm import completion
+import os
+import tempfile
+import wave
+from typing import Tuple
+
 import edge_tts
 import numpy as np
-import tempfile
-import os
-import wave
+from dotenv import load_dotenv
+from fastrtc import Stream, ReplyOnPause
+from litellm import completion
 from pydub import AudioSegment
 
-# FunASR
 from funasr import AutoModel
 from funasr.utils.postprocess_utils import rich_transcription_postprocess
 
 
-# 初始化 ASR
-print("加载 ASR 模型...")
-asr_model = AutoModel(model="paraformer-zh")
-# punc_model = AutoModel(model="ct-punc")
-cache = {}
+class VoiceAssistant:
+    """语音助手类，处理ASR、LLM和TTS的完整流程"""
 
-# 维护对话上下文
-messages = [
-    {
-        "role": "system",
-        "content": """你是健康医院的医生助理，正在进行高血压患者的电话随访。请严格按照以下标准流程进行对话，用中文回复，保持友好和专业：
+    def __init__(self):
+        """初始化语音助手"""
+        # Load environment variables
+        load_dotenv()
 
-1. 建立连接与确认：
-   - 确认患者身份，保证通话顺利。
-   - 问候并确认身份："您好，我是健康医院内科的医生助理，请问您是xx先生/女士吗？"
-   - 询问是否方便接听："现在接听电话方便吗？"
-   - 说明来意："我们是来了解您的血压控制和服药情况的。"
+        self.asr_model = self._init_asr()
+        self.messages = self._init_messages()
+        self.tts_voice = "zh-CN-XiaoxiaoNeural"
+        self.max_context_length = 20
 
-2. 核心信息采集：
-   - 了解患者病情控制、用药依从性和生活方式。
-   - 血压控制："您最近测得的血压是多少？有没有在家做记录？"
-   - 用药情况："您有没有按时服用降压药？有没有出现不舒服或忘记吃药的情况？"
-   - 症状询问："最近有没有头晕、头痛、心慌等不适症状？"
-   - 生活方式："您的饮食和运动情况怎么样？有没有注意低盐？"
+        # API密钥现在从环境变量读取
 
-3. 健康指导与评估：
-   - 给予专业建议，解决疑问，强调重要事项。
-   - 肯定/纠正：根据患者反馈，肯定做得好的地方，并纠正错误做法（如：高盐饮食、随意停药）。
-   - 提醒重点："请您继续坚持监测血压并记录，一定要按时按量服药。"
-   - 解答疑问："您对我给的建议还有其他疑问吗？"
+    def _init_asr(self):
+        """初始化ASR模型"""
+        print("加载 ASR 模型...")
+        model = AutoModel(model="paraformer-zh")
+        print("ASR 模型加载完成")
+        return model
 
-4. 总结与记录：
-   - 明确下一步，完成随访档案。
-   - 复诊提醒："请您按照预约时间（或建议时间）到医院复诊。"
-   - 紧急情况告知："如果出现剧烈不适，请立即就近就医。"
-   - 记录：本次随访情况已记录。
-# 回复要求：
-    每次回复请控制在30字以内，确保信息简洁明了。
+    def _init_messages(self) -> list:
+        """初始化对话消息"""
+        return [
+            {
+                "role": "system",
+                "content": """
+                        **角色与目标：**
+                        你是一位专业的医院随访护士AI。请以**友好、简短、对话式**的语气，主动完成一次高血压患者的电话随访。
+                        
+                        **随访流程（按顺序主动执行）：**
+                        
+                        1.  **开场与确认：** 自我介绍（医院/科室/身份，例如：XX医院随访中心），确认对方身份，说明本次随访目的是关心血压和用药。
+                        2.  **核心信息采集：**
+                            * **询问血压值：** 询问最近测得的**血压数值**和测量频率。
+                            * **询问症状：** 询问是否有**头晕、头痛、胸闷**等不适症状。
+                            * **询问用药：** 确认是否**按时按量服药**，有无忘记或自行停药。
+                        3.  **健康指导与复诊提醒：**
+                            * 给予**简短的用药和低盐饮食**建议（基于患者反馈）。
+                            * **主动提醒**患者下次**复诊的具体时间或建议**，并强调坚持服药。
+                        4.  **结束语：** 礼貌地结束通话。
+                        
+                        **语气要求：** 温暖、专业、简练。每次回复请控制在30字以内，确保信息简洁明了。
 """,
-    }
-]
+            }
+        ]
 
-os.environ["OPENROUTER_API_KEY"] = ""
+    def _convert_audio_to_wav(self, audio: Tuple[int, np.ndarray]) -> str:
+        """转换音频为WAV文件"""
+        sample_rate, audio_data = audio
 
+        # 转换为float32并归一化
+        audio_data = audio_data.astype(np.float32)
+        if audio[1].dtype == np.int16:
+            audio_data /= 32768.0
 
-async def run_tts(text: str, output: str, voice: str = "zh-CN-XiaoxiaoNeural") -> None:
-    communicate = edge_tts.Communicate(text, voice)
-    await communicate.save(output)
+        # 保存为临时WAV文件
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+            temp_path = temp_file.name
+            audio_int16 = (audio_data * 32767).astype(np.int16)
 
+            with wave.open(temp_path, "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(sample_rate)
+                wav_file.writeframes(audio_int16.tobytes())
 
-async def echo(audio: tuple[int, np.ndarray]):
+        return temp_path
 
-    # 1. asr audio
-    # Convert audio to float32 and normalize
-    audio_data = audio[1].astype(np.float32)
-    if audio[1].dtype == np.int16:
-        audio_data /= 32768.0
+    def _speech_to_text(self, audio_path: str) -> str:
+        """语音转文字"""
+        try:
+            result = self.asr_model.generate(
+                input=audio_path,
+                cache={},
+                language="auto",
+                use_itn=True,
+                batch_size_s=60,
+                merge_vad=False,
+                merge_length_s=15,
+            )
+            text = rich_transcription_postprocess(result[0]["text"])
+            print("ASR 识别：", text)
+            return text
+        except Exception as e:
+            print(f"ASR 错误: {e}")
+            return ""
 
-    # Save to temporary WAV file
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-        temp_path = temp_file.name
-        # Convert to int16
-        audio_int16 = (audio_data * 32767).astype(np.int16)
-        # Write WAV
-        with wave.open(temp_path, "wb") as wav_file:
-            wav_file.setnchannels(1)  # mono
-            wav_file.setsampwidth(2)  # 16-bit
-            wav_file.setframerate(audio[0])
-            wav_file.writeframes(audio_int16.tobytes())
-
-    try:
-        res = asr_model.generate(
-            input=temp_path,
-            cache={},
-            language="auto",  # "zn", "en", "yue", "ja", "ko", "nospeech"
-            use_itn=True,
-            batch_size_s=60,
-            merge_vad=False,  #
-            merge_length_s=15,
-        )
-        text = rich_transcription_postprocess(res[0]["text"])
-        print("ASR 识别：", text)
-
+    def _get_llm_response(self, text: str) -> str:
+        """获取LLM响应"""
         if not text.strip():
-            return
-        # 2. call llm
-        messages.append({"role": "user", "content": text})
+            return ""
 
-        print("历史消息：", messages)
-        response = completion(
-            model="openrouter/qwen/qwen3-30b-a3b-instruct-2507",
-            messages=messages,
-        )
-        assistant_reply = response.choices[0].message.content
+        self.messages.append({"role": "user", "content": text})
 
-        print("LLM 回复：", assistant_reply)
-        messages.append({"role": "assistant", "content": assistant_reply})
-        # 限制上下文长度
-        if len(messages) > 20:
-            messages[:] = messages[:1] + messages[-19:]  # 保留system和最近19个消息
-        # 3. tts audio
-        await run_tts(assistant_reply, "output.mp3")
+        try:
+            response = completion(
+                model="openrouter/qwen/qwen3-30b-a3b-instruct-2507",
+                messages=self.messages,
+            )
+            reply = response.choices[0].message.content
+            print("LLM 回复：", reply)
 
-        # Load TTS audio and yield
-        tts_audio = AudioSegment.from_mp3("output.mp3")
-        tts_samples = np.array(tts_audio.get_array_of_samples(), dtype=np.int16)
-        if tts_audio.channels == 2:
-            tts_samples = tts_samples.reshape((-1, 2))
-        else:
-            tts_samples = tts_samples.reshape(1, -1)
-        yield (tts_audio.frame_rate, tts_samples)
+            self.messages.append({"role": "assistant", "content": reply})
 
-        # Clean up
-        os.unlink("output.mp3")
+            # 限制上下文长度
+            if len(self.messages) > self.max_context_length:
+                self.messages[:] = self.messages[:1] + self.messages[-19:]
 
-    finally:
-        os.unlink(temp_path)
+            return reply
+        except Exception as e:
+            print(f"LLM 错误: {e}")
+            return "对不起，我现在无法处理您的请求。"
+
+    async def _text_to_speech(self, text: str) -> Tuple[int, np.ndarray]:
+        """文字转语音"""
+        try:
+            await edge_tts.Communicate(text, self.tts_voice).save("output.mp3")
+
+            # 加载TTS音频
+            tts_audio = AudioSegment.from_mp3("output.mp3")
+            tts_samples = np.array(tts_audio.get_array_of_samples(), dtype=np.int16)
+
+            if tts_audio.channels == 2:
+                tts_samples = tts_samples.reshape((-1, 2))
+            else:
+                tts_samples = tts_samples.reshape(-1)
+
+            return (tts_audio.frame_rate, tts_samples)
+        except Exception as e:
+            print(f"TTS 错误: {e}")
+            return (16000, np.array([]))
+
+    async def process_audio(self, audio: Tuple[int, np.ndarray]):
+        """处理音频的完整流程"""
+        # 1. 转换音频格式
+        temp_wav_path = self._convert_audio_to_wav(audio)
+
+        try:
+            # 2. 语音识别
+            text = self._speech_to_text(temp_wav_path)
+
+            if not text.strip():
+                return
+
+            # 3. 获取LLM响应
+            reply = self._get_llm_response(text)
+
+            if not reply:
+                return
+
+            # 4. 文字转语音
+            tts_result = await self._text_to_speech(reply)
+
+            if tts_result[1].size > 0:
+                yield tts_result
+
+            # 清理临时文件
+            if os.path.exists("output.mp3"):
+                os.unlink("output.mp3")
+
+        finally:
+            # 清理临时WAV文件
+            os.unlink(temp_wav_path)
+
+
+# 创建语音助手实例
+assistant = VoiceAssistant()
+
+
+async def echo(audio: Tuple[int, np.ndarray]):
+    """音频处理回调函数"""
+    async for result in assistant.process_audio(audio):
+        yield result
 
 
 # 创建流
@@ -138,10 +198,13 @@ stream = Stream(
     mode="send-receive",
 )
 
-# 启动
-if __name__ == "__main__":
+
+def main():
+    """主函数"""
     print("ASR + TTS 系统启动")
     print("说话 -> 识别 -> 播放")
-    # 可以调用asr_audio_streaming()进行测试
-    # asr_audio_streaming()
     stream.ui.launch()
+
+
+if __name__ == "__main__":
+    main()
