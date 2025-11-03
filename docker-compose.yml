@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  openai-edge-tts:
+    image: travisvn/openai-edge-tts:latest
+    container_name: openai-edge-tts
+    ports:
+      - "5050:5050"
+    environment:
+      - PORT=${PORT}
+      - DEFAULT_VOICE=${DEFAULT_VOICE}
+      - DEFAULT_RESPONSE_FORMAT=${DEFAULT_RESPONSE_FORMAT}
+      - DEFAULT_SPEED=${DEFAULT_SPEED}
+      - DEFAULT_LANGUAGE=${DEFAULT_LANGUAGE}
+      - REQUIRE_API_KEY=${REQUIRE_API_KEY}
+      - REMOVE_FILTER=${REMOVE_FILTER}
+      - EXPAND_API=${EXPAND_API}
+      - DETAILED_ERROR_LOGGING=${DETAILED_ERROR_LOGGING}
+    env_file:
+      - .env
+    restart: unless-stopped

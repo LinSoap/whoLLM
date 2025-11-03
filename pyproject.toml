@@ -1,0 +1,34 @@
+[project]
+name = "whollm"
+version = "0.1.0"
+description = "Simple echo program that captures audio from microphone"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastrtc[vad,tts]>=0.0.33",
+    "funasr==1.2.7",
+    "numpy>=1.21.0",
+    "edge-tts>=6.1.0",
+    "pydub>=0.25.0",
+    "litellm>=1.79.1",
+    "torch>=2.8.0",
+    "torchaudio>=2.8.0",
+    "torchvision>=0.17.0,<0.24.0",
+    "pyaudio",
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", marker = "platform_system != 'Darwin'" },
+]
+torchaudio = [
+    { index = "pytorch-cpu", marker = "platform_system != 'Darwin'" },
+]
+torchvision = [
+    { index = "pytorch-cpu", marker = "platform_system != 'Darwin'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
