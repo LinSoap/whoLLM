@@ -161,6 +161,10 @@ class VoiceAssistant:
 
     async def startup_audio(self):
         """启动音频助手"""
+        # 每次开始新对话时重置消息历史，清空上下文
+        self.messages = self._init_messages()
+        print("上下文已清空，开始新对话")
+
         sample_rate, samples, mp3_path = await self._text_to_speech(
             "您好，健康医院随访中心，请问您是张先生吗？"
         )
@@ -227,7 +231,7 @@ def main():
     """主函数"""
     print("ASR + TTS 系统启动")
     print("说话 -> 识别 -> 播放")
-    stream.ui.launch()
+    stream.ui.launch(server_name="0.0.0.0")
 
 
 if __name__ == "__main__":
